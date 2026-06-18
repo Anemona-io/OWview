@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OWview docs — OpenWind energy capture viewer</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      :root {
+        --bg: #3d3d43; --surface: #56565d; --border: #6e6e76;
+        --text: #e5e7eb; --muted: #b0b0b6; --accent: #DD8D57; --radius: 12px;
+      }
+      html { font-size: 18px; }
+      body {
+        background: var(--bg); color: var(--text);
+        font-family: "Outfit", system-ui, sans-serif;
+        font-size: 15px; line-height: 1.65; padding: 16px;
+      }
+      header {
+        display: flex; align-items: center; gap: 12px;
+        max-width: 760px; margin: 0 auto 26px;
+      }
+      header img { width: 28px; height: 28px; }
+      header .tagline { color: var(--muted); font-size: 0.8rem; }
+      header .spacer { flex: 1; }
+      header a {
+        color: var(--muted); text-decoration: none; font-size: 0.8rem;
+        padding: 5px 14px; border: 1px solid var(--border); border-radius: 6px;
+      }
+      header a:hover { border-color: var(--accent); color: var(--accent); }
+      main { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+      section {
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: var(--radius); padding: 18px 22px;
+      }
+      h1 { font-size: 1.3rem; font-weight: 600; }
+      h2 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; color: var(--accent); }
+      p, li { color: var(--text); font-size: 0.9rem; }
+      ul { padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+      a { color: var(--accent); }
+      code {
+        background: rgba(0,0,0,0.25); border-radius: 4px;
+        padding: 1px 6px; font-size: 0.82em;
+      }
+      .muted { color: var(--muted); }
+      footer {
+        max-width: 760px; margin: 26px auto 8px; text-align: center;
+        font-size: 0.75rem; color: var(--muted);
+      }
+      footer a { text-decoration: none; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <img src="/favicon.svg" alt="OWview" />
+      <span><strong>OWview</strong></span>
+      <span class="tagline">OpenWind energy capture viewer</span>
+      <span class="spacer"></span>
+      <a href="index.html">← Back to the app</a>
+    </header>
+
+    <main>
+      <section>
+        <h1>What is OWview?</h1>
+        <p>
+          OWview turns the Excel report written by a UL OpenWind <em>energy capture</em> run into an interactive
+          dashboard: project totals and the loss cascade, per-site and per-turbine yields, the layout map, power
+          and thrust curves, and the met-mast wind climates used in the run. Load the <code>.xlsx</code> to view it.
+        </p>
+      </section>
+
+      <section>
+        <h2>Your data never leaves your machine</h2>
+        <p>
+          The file is parsed and plotted entirely in the browser. Nothing is uploaded and no server receives the
+          file. The layout map plots turbines in the report's own projected coordinates, so no map-tile requests
+          are made that could reveal the site location. OWview is open source on
+          <a href="https://github.com/Anemona-io/owview" target="_blank" rel="noopener">GitHub</a>.
+        </p>
+      </section>
+
+      <section>
+        <h2>Getting the report out of OpenWind</h2>
+        <p>
+          Run an energy capture in OpenWind and save the report it writes as an Excel workbook. Drop that file
+          anywhere on the OWview page, or use <em>Load file</em>. If the workbook contains several sheets (one per
+          scenario or layout), a scenario picker appears in the navigation bar.
+        </p>
+      </section>
+
+      <section>
+        <h2>What OWview reads</h2>
+        <ul>
+          <li><strong>Report header</strong>: OpenWind version, projection and EPSG code, time zone, and report date.</li>
+          <li><strong>Project totals</strong>: ideal, theoretical gross, gross, and net energy, plus capacity factor and topographic and array efficiency. The energy cascade chart is derived from these values; the wake-loss step is reconstructed from the per-turbine <em>Array Yield</em> column.</li>
+          <li><strong>Settings &amp; losses</strong>: the energy capture parameters, the global loss list, and the wake and induction model settings. Values of <code>0</code> or <code>Off</code> are dimmed so active settings are easier to find.</li>
+          <li><strong>Sites</strong>: the per-site summary blocks, plus any <em>enabled external site layers</em> (neighbouring farms) included in the run.</li>
+          <li><strong>Turbines</strong>: the full per-turbine table, including coordinates, yields, efficiencies, turbulence intensity, and per-turbine losses. The on-screen table shows a selected set of columns; the CSV export contains every column OpenWind wrote.</li>
+          <li><strong>Turbine types</strong>: specifications and the power and thrust curves. Where a curve is tabulated for several air densities, the column closest to 1.225 kg/m³ is plotted.</li>
+          <li><strong>Met masts</strong>: the frequency (TAB-style) tables shown as a wind rose and joint-probability heatmap, turbulence intensity versus wind speed, and the per-sector Weibull fits.</li>
+        </ul>
+        <p class="muted" style="margin-top:8px">
+          The parser is tolerant of malformed input: unrecognised blocks are skipped, and OpenWind's placeholder
+          values (<code>-999</code>, <code>N/A</code>, and overflow values such as <code>3.3e+36</code>) are
+          treated as blanks rather than plotted.
+        </p>
+      </section>
+
+      <section>
+        <h2>Exports</h2>
+        <ul>
+          <li><strong>Turbines CSV</strong>: every column of the per-turbine table, for all sites.</li>
+          <li><strong>Full JSON</strong>: the complete parsed model (totals, settings, sites, turbines, curves, and mast tables), suitable for scripting.</li>
+          <li><strong>Layout PNG</strong>: the turbine map on a white background, for use in reports or slides.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Sibling tool</h2>
+        <p>
+          For WAsP observed wind climates, <a href="https://windtab.anemona.io" target="_blank" rel="noopener">windtab</a>
+          provides the same analysis for <code>.tab</code> files: wind rose, Weibull fits, and joint-probability heatmap, in the browser.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      OWview is an independent, open-source tool, not affiliated with or endorsed by UL Solutions.
+      OpenWind is a product of UL Solutions. Built by <a href="https://anemona.io">anemona.io</a>.
+      <a href="mailto:sebastian@anemona.io?subject=OWview%20feedback">Send feedback</a>.
+    </footer>
+  </body>
+</html>
