@@ -99,6 +99,21 @@ html, body {
   padding: 10px 16px;
   font-size: 0.85rem;
 }
+#error-banner p {
+  margin: 0 0 10px;
+}
+#error-banner .report-btn {
+  display: inline-block;
+  background: var(--accent);
+  color: #1a1a1e;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 999px;
+  text-decoration: none;
+}
+#error-banner .report-btn:hover {
+  opacity: 0.88;
+}
 
 /* ── empty state ────────────────────────────────────────────────────── */
 #empty-state {

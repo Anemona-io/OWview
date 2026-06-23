@@ -1,12 +1,34 @@
 import * as XLSX from "xlsx";
 import type {
-  Cell, CurveMatrix, DirMatrix, Group, Mast, MiniTable, ParsedWorkbook,
+  Cell, CurveMatrix, DirMatrix, Group, Mast, MiniTable, ParseDiagnostics, ParsedWorkbook,
   Scenario, Site, Turbine, TurbineType, WeibullRow, KV,
 } from "./types";
+import { ParseError } from "./types";
 import {
   binMid, cellStr, cleanNum, isBlankRow, isKvRow, isSingleCell,
-  kvNum, kvStr, label, toKv,
+  kvNum, kvStr, label, labelIs, labelStarts, norm, toKv,
 } from "./grid";
+
+/**
+ * Known wording variants for the structural anchors and section titles, kept in
+ * one place so a future OpenWind rename is a one-line addition rather than a hunt
+ * through the parser. The first entry is the canonical/original wording.
+ */
+const SYN = {
+  siteName: ["Site Name"],
+  index: ["Index"],
+  metMast: ["Met Mast Layer", "Met Mast", "Mast Layer"],
+  powerCurve: ["Power Curve", "Power Table"],
+  comments: ["Comments"],
+  thrustCurve: ["Thrust Curve", "Ct Curve", "Thrust Coefficient Curve"],
+  rpmCurve: ["RPM Curve", "Rotor Speed Curve"],
+  windspeed: ["Windspeed", "Wind Speed"],
+  frequencyTable: ["Frequency Table", "Frequency Distribution"],
+  tiTable: ["Turbulence Intensity Table", "Turbulence Intensity", "TI Table"],
+  weibullTable: ["Weibull Table", "Weibull Fit"],
+  heightTable: ["Height [m]", "Heights"],
+  stdev: ["Stdev"],
+};
 
 export function parseWorkbook(data: ArrayBuffer): ParsedWorkbook {
   let wb: XLSX.WorkBook;
@@ -16,20 +38,41 @@ export function parseWorkbook(data: ArrayBuffer): ParsedWorkbook {
     throw new Error(`not a readable Excel workbook (${String(err)})`);
   }
   const scenarios: Scenario[] = [];
+  const allRows: Cell[][] = [];
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
     if (!ws) continue;
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }) as Cell[][];
+    allRows.push(...rows);
     const sc = parseSheet(rows, name);
     if (sc) scenarios.push(sc);
   }
   if (scenarios.length === 0) {
-    throw new Error(
+    throw new ParseError(
       "no OpenWind energy capture blocks recognised in this workbook. " +
-      "Expected the Excel report written by an OpenWind energy capture operation."
+      "Expected the Excel report written by an OpenWind energy capture operation.",
+      collectDiagnostics(wb.SheetNames, allRows),
     );
   }
-  return { scenarios };
+  // Loaded, but a sheet yielded only totals — surface a non-blocking report.
+  const diagnostics = scenarios.some(isStructurallyEmpty)
+    ? collectDiagnostics(wb.SheetNames, allRows)
+    : undefined;
+  return { scenarios, diagnostics };
+}
+
+/** Gather the clues a maintainer needs to register a renamed anchor. */
+function collectDiagnostics(sheetNames: string[], rows: Cell[][]): ParseDiagnostics {
+  const seen = new Set<string>();
+  let version: string | null = null;
+  for (const row of rows) {
+    const a = label(row).trim();
+    if (a) seen.add(a);
+    if (version === null && norm(a).startsWith("openwind version")) {
+      version = cellStr(row[1] ?? null) || null;
+    }
+  }
+  return { sheetNames, labelsSeen: [...seen], version };
 }
 
 /* ── block segmentation ─────────────────────────────────────────────── */
@@ -40,17 +83,20 @@ interface Anchor { kind: AnchorKind; start: number; row: number }
 function findAnchors(rows: Cell[][]): Anchor[] {
   const anchors: Anchor[] = [];
   for (let i = 0; i < rows.length; i++) {
-    const a = label(rows[i]);
-    const b = cellStr(rows[i][1] ?? null);
-    if (a === "Site Name" && b === "Index") {
+    const row = rows[i];
+    const b = cellStr(row[1] ?? null);
+    const bIsIndex = SYN.index.some((s) => norm(b) === norm(s));
+    if (labelIs(row, ...SYN.siteName) && bIsIndex) {
       anchors.push({ kind: "turbTable", start: i, row: i });
-    } else if (a === "Site Name" && b !== "") {
+    } else if (labelIs(row, ...SYN.siteName) && b !== "") {
       // Pull in the decorative title row above when it repeats the site name
       const start = i > 0 && isSingleCell(rows[i - 1]) && label(rows[i - 1]) === b ? i - 1 : i;
       anchors.push({ kind: "site", start, row: i });
-    } else if (a.startsWith("Met Mast Layer")) {
+    } else if (labelStarts(row, ...SYN.metMast)) {
       anchors.push({ kind: "mast", start: i, row: i });
-    } else if (a.startsWith("Power Curve [")) {
+    } else if (labelIs(row, ...SYN.powerCurve)) {
+      // Exact match: "Power Curve [kWh]" is a turbine type; "Power Curve
+      // Adjustment" is a loss setting and must not be mistaken for one.
       anchors.push({ kind: "ttype", start: findTypeTitle(rows, i) ?? i, row: i });
     }
   }
@@ -60,13 +106,13 @@ function findAnchors(rows: Cell[][]): Anchor[] {
 /** Walk back from a "Power Curve [kWh]" row to the turbine-type title above "Comments:". */
 function findTypeTitle(rows: Cell[][], pcRow: number): number | null {
   for (let j = pcRow - 1; j >= Math.max(0, pcRow - 60); j--) {
-    if (label(rows[j]) === "Comments:") {
+    if (labelIs(rows[j], ...SYN.comments)) {
       for (let k = j - 1; k >= Math.max(0, j - 6); k--) {
         if (!isBlankRow(rows[k]) && isSingleCell(rows[k])) return k;
       }
       return null;
     }
-    if (label(rows[j]).startsWith("Power Curve [")) return null; // ran into previous block
+    if (labelIs(rows[j], ...SYN.powerCurve)) return null; // ran into previous block
   }
   return null;
 }
@@ -79,7 +125,7 @@ function parseSheet(rows: Cell[][], sheetName: string): Scenario | null {
   // External-layer rows can appear anywhere (header region or between blocks)
   const externalLayers: string[] = [];
   for (const row of rows) {
-    if (label(row).startsWith("Enabled External Site Layer")) {
+    if (labelStarts(row, "Enabled External Site Layer")) {
       const v = cellStr(row[1] ?? null);
       if (v && !externalLayers.includes(v)) externalLayers.push(v);
     }
@@ -116,6 +162,7 @@ function parseSheet(rows: Cell[][], sheetName: string): Scenario | null {
     turbineTypes: [],
     masts: [],
     turbineTableHeader: [],
+    warnings: [],
   };
 
   for (let k = 0; k < anchors.length; k++) {
@@ -126,11 +173,22 @@ function parseSheet(rows: Cell[][], sheetName: string): Scenario | null {
     } else if (a.kind === "turbTable") {
       const { header, turbines } = parseTurbineTable(rows, a.row, end);
       if (header.length > scenario.turbineTableHeader.length) scenario.turbineTableHeader = header;
+      if (turbines.length === 0) {
+        scenario.warnings.push(`Turbine table at row ${a.row + 1} had no readable rows.`);
+      }
       scenario.turbines.push(...turbines);
     } else if (a.kind === "ttype") {
-      scenario.turbineTypes.push(parseTurbineType(rows, a.start, end));
+      const tt = parseTurbineType(rows, a.start, end);
+      if (!tt.power) {
+        scenario.warnings.push(`Turbine type "${tt.name}" had no readable power curve.`);
+      }
+      scenario.turbineTypes.push(tt);
     } else {
-      scenario.masts.push(parseMast(rows, a.row, end));
+      const m = parseMast(rows, a.row, end);
+      if (!m.freq) {
+        scenario.warnings.push(`Met mast "${m.name}" had no readable frequency table.`);
+      }
+      scenario.masts.push(m);
     }
   }
 
@@ -146,11 +204,26 @@ function parseSheet(rows: Cell[][], sheetName: string): Scenario | null {
     site.turbines.push(t);
   }
 
-  const hasContent =
+  const hasStructure =
     scenario.sites.length > 0 || scenario.turbines.length > 0 ||
-    scenario.masts.length > 0 || scenario.turbineTypes.length > 0 ||
-    scenario.totals.netGwh !== null || scenario.totals.grossGwh !== null;
-  return hasContent ? scenario : null;
+    scenario.masts.length > 0 || scenario.turbineTypes.length > 0;
+  const hasTotals = scenario.totals.netGwh !== null || scenario.totals.grossGwh !== null;
+  if (!hasStructure && !hasTotals) return null;
+  if (!hasStructure) {
+    // Totals parsed but no turbine table / sites / types / masts — almost
+    // certainly renamed anchors. Keep the totals, flag for a report.
+    scenario.warnings.push(
+      "No turbine table, sites, turbine types or met masts were recognised — " +
+      "the file may come from a newer OpenWind version with renamed sections."
+    );
+  }
+  return scenario;
+}
+
+/** A scenario that parsed only header totals, with no recognisable body. */
+function isStructurallyEmpty(sc: Scenario): boolean {
+  return sc.sites.length === 0 && sc.turbines.length === 0 &&
+    sc.masts.length === 0 && sc.turbineTypes.length === 0;
 }
 
 /* ── header region (metadata, settings, losses) ─────────────────────── */
@@ -230,14 +303,21 @@ function parseTurbineTable(rows: Cell[][], headerRow: number, end: number): { he
   while (last >= 0 && headerCells[last] === "") last--;
   const header = headerCells.slice(0, last + 1);
 
+  // Prefix match on the normalised header (unit suffix stripped). `colExact`
+  // matches the whole normalised field, used where a prefix would be ambiguous
+  // (e.g. "Capacity" must not swallow "Capacity Factor").
   const col = (prefix: string): number => {
-    const p = prefix.toLowerCase();
-    return header.findIndex((h) => h.toLowerCase().startsWith(p));
+    const p = norm(prefix);
+    return header.findIndex((h) => norm(h).startsWith(p));
+  };
+  const colExact = (name: string): number => {
+    const n = norm(name);
+    return header.findIndex((h) => norm(h) === n);
   };
   const cols = {
-    index: col("Index"), label: col("Label"), x: col("X ["), y: col("Y ["),
+    index: col("Index"), label: col("Label"), x: colExact("X"), y: colExact("Y"),
     type: col("Turbine Type"), hub: col("Hub Height"), rotor: col("Rotor Diameter"),
-    cap: col("Capacity [k"), elev: col("Terrain Elevation"), free: col("Mean Free"),
+    cap: colExact("Capacity"), elev: col("Terrain Elevation"), free: col("Mean Free"),
     waked: col("Mean Wake"), ideal: col("Ideal Yield"), theo: col("Theoretical Gross"),
     gross: col("Gross Yield"), array: col("Array Yield"), net: col("Net Yield"),
     cf: col("Capacity Factor"), topo: col("Topographic Eff"), arrEff: col("Array Eff"),
@@ -299,10 +379,10 @@ function parseTurbineType(rows: Cell[][], start: number, end: number): TurbineTy
     const a = label(row);
     if (isBlankRow(row)) { i++; continue; }
 
-    if (a === "Comments:") { inComments = true; i++; continue; }
-    if (a.startsWith("Power Curve [")) { [t.power, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
-    if (a === "Thrust Curve") { [t.thrust, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
-    if (a === "RPM Curve") { [t.rpm, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
+    if (labelIs(row, ...SYN.comments)) { inComments = true; i++; continue; }
+    if (labelIs(row, ...SYN.powerCurve)) { [t.power, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
+    if (labelIs(row, ...SYN.thrustCurve)) { [t.thrust, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
+    if (labelIs(row, ...SYN.rpmCurve)) { [t.rpm, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
 
     if (isKvRow(row)) {
       inComments = false;
@@ -341,7 +421,7 @@ function parseCurve(rows: Cell[][], from: number, end: number, leadingKvs: KV[])
   while (i < end) {
     const row = rows[i];
     if (isBlankRow(row)) { i++; continue; }
-    if (label(row).startsWith("Windspeed")) break;
+    if (labelStarts(row, ...SYN.windspeed)) break;
     if (isKvRow(row)) { leadingKvs.push(toKv(row)); i++; continue; }
     return [null, i]; // unexpected content; bail without consuming it
   }
@@ -374,7 +454,7 @@ function parseCurve(rows: Cell[][], from: number, end: number, leadingKvs: KV[])
 
 function parseMast(rows: Cell[][], start: number, end: number): Mast {
   const m: Mast = {
-    name: label(rows[start]).replace(/^Met Mast Layer:\s*/i, ""),
+    name: label(rows[start]).replace(/^(Met Mast Layer|Met Mast|Mast Layer)\s*:?\s*/i, ""),
     height: null, x: null, y: null,
     kvs: [], notes: [], tables: [], freq: null, ti: null, weibull: [],
   };
@@ -385,13 +465,13 @@ function parseMast(rows: Cell[][], start: number, end: number): Mast {
     const a = label(row);
     if (isBlankRow(row)) { i++; continue; }
 
-    if (a.startsWith("Frequency Table")) { [m.freq, i] = parseDirMatrix(rows, i + 1, end); continue; }
-    if (a.startsWith("Turbulence Intensity Table")) { [m.ti, i] = parseDirMatrix(rows, i + 1, end); continue; }
-    if (a.startsWith("Weibull Table")) { i = parseWeibull(rows, i + 1, end, m.weibull); continue; }
-    if (a.startsWith("Height [m]")) { i = parseMiniTable(rows, i, end, "Heights", m.tables); continue; }
-    if (a.startsWith("Stdev")) { i = parseMiniTable(rows, i + 1, end, a, m.tables); continue; }
+    if (labelStarts(row, ...SYN.frequencyTable)) { [m.freq, i] = parseDirMatrix(rows, i + 1, end); continue; }
+    if (labelStarts(row, ...SYN.tiTable)) { [m.ti, i] = parseDirMatrix(rows, i + 1, end); continue; }
+    if (labelStarts(row, ...SYN.weibullTable)) { i = parseWeibull(rows, i + 1, end, m.weibull); continue; }
+    if (labelStarts(row, ...SYN.heightTable)) { i = parseMiniTable(rows, i, end, "Heights", m.tables); continue; }
+    if (labelStarts(row, ...SYN.stdev)) { i = parseMiniTable(rows, i + 1, end, a, m.tables); continue; }
 
-    if (a.startsWith("X [")) {
+    if (norm(a) === "x") {
       m.x = cleanNum(row[1] ?? null);
       m.y = cleanNum(row[3] ?? null);
       const extra = cellStr(row[4] ?? null);
@@ -427,8 +507,10 @@ function parseMiniTable(rows: Cell[][], headerRow: number, end: number, title: s
 }
 
 function parseDirMatrix(rows: Cell[][], from: number, end: number): [DirMatrix | null, number] {
+  // Header row reads e.g. "Speed \ Direction" or "Windspeed / Sector".
+  const isMatrixHeader = (row: Cell[]): boolean => /^(wind)?speed\s*[\\/]/.test(norm(label(row)));
   let i = from;
-  while (i < end && (isBlankRow(rows[i]) || !/^Speed\s*[\\/]/.test(label(rows[i])))) {
+  while (i < end && (isBlankRow(rows[i]) || !isMatrixHeader(rows[i]))) {
     if (!isBlankRow(rows[i])) return [null, i];
     i++;
   }
@@ -463,7 +545,7 @@ function parseDirMatrix(rows: Cell[][], from: number, end: number): [DirMatrix |
 function parseWeibull(rows: Cell[][], from: number, end: number, out: WeibullRow[]): number {
   let i = from;
   // optional header row ("Sector | Degrees | P [%] | ...")
-  if (i < end && label(rows[i]) === "Sector") i++;
+  if (i < end && labelIs(rows[i], "Sector")) i++;
   while (i < end) {
     const row = rows[i];
     const sector = cleanNum(row[0] ?? null);

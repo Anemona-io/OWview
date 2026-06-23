@@ -1,4 +1,4 @@
-import type { ParsedWorkbook, Scenario } from "./parse/types";
+import type { ParseDiagnostics, ParsedWorkbook, Scenario } from "./parse/types";
 
 export type MapColorBy = "site" | "netMwh" | "arrayEff" | "cf" | "meanFree";
 
@@ -12,6 +12,8 @@ export interface AppState {
   scenarioIndex: number;
   filename: string;
   error: string | null;
+  /** Diagnostics from a failed parse, used to offer a "Report this file" email. */
+  errorDiagnostics: ParseDiagnostics | null;
   mapColorBy: MapColorBy;
   projectSite: string; // "" = all sites (focus the whole report)
   compareScenarios: number[]; // scenario indices included in the comparison
@@ -29,6 +31,7 @@ const state: AppState = {
   scenarioIndex: 0,
   filename: "",
   error: null,
+  errorDiagnostics: null,
   mapColorBy: "site",
   projectSite: "",
   compareScenarios: [],
@@ -63,6 +66,7 @@ export function setWorkbook(wb: ParsedWorkbook, filename: string): void {
   state.filename = filename;
   state.scenarioIndex = 0;
   state.error = null;
+  state.errorDiagnostics = null;
   state.projectSite = "";
   state.compareScenarios = wb.scenarios.map((_, i) => i);
   state.compareBaseline = 0;
@@ -73,8 +77,9 @@ export function setWorkbook(wb: ParsedWorkbook, filename: string): void {
   notify();
 }
 
-export function setError(msg: string): void {
+export function setError(msg: string, diagnostics: ParseDiagnostics | null = null): void {
   state.error = msg;
+  state.errorDiagnostics = diagnostics;
   state.workbook = null;
   notify();
 }

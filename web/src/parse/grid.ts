@@ -18,6 +18,35 @@ export function label(row: Cell[]): string {
   return cellStr(row[0]);
 }
 
+/**
+ * Normalise a label for tolerant matching: lower-case, collapse whitespace,
+ * drop a trailing bracketed unit ("Power Curve [kWh]" -> "power curve"), and
+ * strip a trailing colon ("Site Name:" -> "site name"). This absorbs the
+ * casing / spacing / punctuation / unit drift that OpenWind introduces between
+ * versions without changing the underlying field.
+ */
+export function norm(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/\s*\[[^\]]*\]\s*$/, "") // trailing "[unit]"
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/:$/, "")
+    .trim();
+}
+
+/** True when the row's col-A label equals (normalised) any of the given synonyms. */
+export function labelIs(row: Cell[], ...alts: string[]): boolean {
+  const a = norm(label(row));
+  return alts.some((alt) => a === norm(alt));
+}
+
+/** True when the row's col-A label starts with (normalised) any of the given synonyms. */
+export function labelStarts(row: Cell[], ...alts: string[]): boolean {
+  const a = norm(label(row));
+  return alts.some((alt) => a.startsWith(norm(alt)));
+}
+
 export function isBlankRow(row: Cell[]): boolean {
   return row.every((c) => c == null || cellStr(c) === "");
 }
@@ -46,8 +75,8 @@ export function toKv(row: Cell[]): KV {
 }
 
 export function findKv(kvs: KV[], prefix: string): KV | undefined {
-  const p = prefix.toLowerCase();
-  return kvs.find((kv) => kv.key.toLowerCase().startsWith(p));
+  const p = norm(prefix);
+  return kvs.find((kv) => norm(kv.key).startsWith(p));
 }
 
 export function kvNum(kvs: KV[], prefix: string): number | null {

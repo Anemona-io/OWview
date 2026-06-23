@@ -1,5 +1,12 @@
 import { parseWorkbook } from "../parse/blocks";
+import { ParseError } from "../parse/types";
 import { setError, setWorkbook } from "../state";
+
+/** Route a thrown parse error to state, preserving diagnostics when present. */
+function reportError(err: unknown): void {
+  if (err instanceof ParseError) setError(err.message, err.diagnostics);
+  else setError(String(err));
+}
 
 export function initDropzone(root: HTMLElement): void {
   // Whole-page drag overlay
@@ -50,7 +57,7 @@ export function initDropzone(root: HTMLElement): void {
       const buf = await res.arrayBuffer();
       setWorkbook(parseWorkbook(buf), "example.xlsx");
     } catch (err) {
-      setError(String(err));
+      reportError(err);
     }
   });
 
@@ -70,7 +77,7 @@ function loadFile(file: File): void {
       const buf = reader.result as ArrayBuffer;
       setWorkbook(parseWorkbook(buf), file.name);
     } catch (err) {
-      setError(String(err));
+      reportError(err);
     }
   };
   reader.readAsArrayBuffer(file);

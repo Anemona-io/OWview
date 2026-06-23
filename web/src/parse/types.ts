@@ -150,8 +150,36 @@ export interface Scenario {
   masts: Mast[];
   /** Header of the per-turbine table, used for CSV export. */
   turbineTableHeader: string[];
+  /** Non-fatal parse issues (e.g. a recognised block we couldn't fully read). */
+  warnings: string[];
 }
 
 export interface ParsedWorkbook {
   scenarios: Scenario[];
+  /**
+   * Present when the workbook parsed but at least one sheet yielded only header
+   * totals with no recognisable body (turbine table / sites / types / masts) —
+   * a strong sign an OpenWind version renamed those anchors. The UI shows a
+   * non-blocking "Report this file" notice above the data it did manage to read.
+   */
+  diagnostics?: ParseDiagnostics;
+}
+
+/** Technical detail captured when a workbook yields no recognisable scenarios. */
+export interface ParseDiagnostics {
+  sheetNames: string[];
+  /** Distinct column-A labels seen across all sheets — the clue to which anchor drifted. */
+  labelsSeen: string[];
+  /** Detected OpenWind version string, if any key/value carried it. */
+  version: string | null;
+}
+
+/** Thrown by parseWorkbook when nothing parses, carrying diagnostics for a user report. */
+export class ParseError extends Error {
+  diagnostics: ParseDiagnostics;
+  constructor(message: string, diagnostics: ParseDiagnostics) {
+    super(message);
+    this.name = "ParseError";
+    this.diagnostics = diagnostics;
+  }
 }
