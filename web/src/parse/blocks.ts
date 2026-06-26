@@ -39,30 +39,35 @@ export function parseWorkbook(data: ArrayBuffer): ParsedWorkbook {
   }
   const scenarios: Scenario[] = [];
   const allRows: Cell[][] = [];
+  // Sections whose header was found but carried no numeric data columns (e.g. a
+  // frequency table with non-numeric / WRG-style direction headers). Collected
+  // so the "Report this file" email can show exactly what drifted.
+  const unreadable: string[] = [];
   for (const name of wb.SheetNames) {
     const ws = wb.Sheets[name];
     if (!ws) continue;
     const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null }) as Cell[][];
     allRows.push(...rows);
-    const sc = parseSheet(rows, name);
+    const sc = parseSheet(rows, name, unreadable);
     if (sc) scenarios.push(sc);
   }
   if (scenarios.length === 0) {
     throw new ParseError(
       "no OpenWind energy capture blocks recognised in this workbook. " +
       "Expected the Excel report written by an OpenWind energy capture operation.",
-      collectDiagnostics(wb.SheetNames, allRows),
+      collectDiagnostics(wb.SheetNames, allRows, unreadable),
     );
   }
-  // Loaded, but a sheet yielded only totals — surface a non-blocking report.
-  const diagnostics = scenarios.some(isStructurallyEmpty)
-    ? collectDiagnostics(wb.SheetNames, allRows)
+  // Loaded, but a sheet yielded only totals, or a section's headers were
+  // unreadable — surface a non-blocking report either way.
+  const diagnostics = scenarios.some(isStructurallyEmpty) || unreadable.length > 0
+    ? collectDiagnostics(wb.SheetNames, allRows, unreadable)
     : undefined;
   return { scenarios, diagnostics };
 }
 
 /** Gather the clues a maintainer needs to register a renamed anchor. */
-function collectDiagnostics(sheetNames: string[], rows: Cell[][]): ParseDiagnostics {
+function collectDiagnostics(sheetNames: string[], rows: Cell[][], unreadable: string[]): ParseDiagnostics {
   const seen = new Set<string>();
   let version: string | null = null;
   for (const row of rows) {
@@ -72,7 +77,12 @@ function collectDiagnostics(sheetNames: string[], rows: Cell[][]): ParseDiagnost
       version = cellStr(row[1] ?? null) || null;
     }
   }
-  return { sheetNames, labelsSeen: [...seen], version };
+  return {
+    sheetNames,
+    labelsSeen: [...seen],
+    version,
+    unreadable: unreadable.length ? [...new Set(unreadable)] : undefined,
+  };
 }
 
 /* ── block segmentation ─────────────────────────────────────────────── */
@@ -119,7 +129,7 @@ function findTypeTitle(rows: Cell[][], pcRow: number): number | null {
 
 /* ── sheet parser ───────────────────────────────────────────────────── */
 
-function parseSheet(rows: Cell[][], sheetName: string): Scenario | null {
+function parseSheet(rows: Cell[][], sheetName: string, unreadable: string[]): Scenario | null {
   const anchors = findAnchors(rows);
 
   // External-layer rows can appear anywhere (header region or between blocks)
@@ -178,13 +188,13 @@ function parseSheet(rows: Cell[][], sheetName: string): Scenario | null {
       }
       scenario.turbines.push(...turbines);
     } else if (a.kind === "ttype") {
-      const tt = parseTurbineType(rows, a.start, end);
+      const tt = parseTurbineType(rows, a.start, end, unreadable);
       if (!tt.power) {
         scenario.warnings.push(`Turbine type "${tt.name}" had no readable power curve.`);
       }
       scenario.turbineTypes.push(tt);
     } else {
-      const m = parseMast(rows, a.row, end);
+      const m = parseMast(rows, a.row, end, unreadable);
       if (!m.freq) {
         scenario.warnings.push(`Met mast "${m.name}" had no readable frequency table.`);
       }
@@ -363,7 +373,7 @@ function parseTurbineTable(rows: Cell[][], headerRow: number, end: number): { he
 
 /* ── turbine type block ─────────────────────────────────────────────── */
 
-function parseTurbineType(rows: Cell[][], start: number, end: number): TurbineType {
+function parseTurbineType(rows: Cell[][], start: number, end: number, unreadable: string[]): TurbineType {
   const t: TurbineType = {
     name: isSingleCell(rows[start]) ? label(rows[start]) : "Turbine type",
     comments: [], specs: [], power: null, thrust: null, rpm: null,
@@ -380,9 +390,9 @@ function parseTurbineType(rows: Cell[][], start: number, end: number): TurbineTy
     if (isBlankRow(row)) { i++; continue; }
 
     if (labelIs(row, ...SYN.comments)) { inComments = true; i++; continue; }
-    if (labelIs(row, ...SYN.powerCurve)) { [t.power, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
-    if (labelIs(row, ...SYN.thrustCurve)) { [t.thrust, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
-    if (labelIs(row, ...SYN.rpmCurve)) { [t.rpm, i] = parseCurve(rows, i + 1, end, t.specs); continue; }
+    if (labelIs(row, ...SYN.powerCurve)) { [t.power, i] = parseCurve(rows, i + 1, end, t.specs, unreadable, `Turbine type "${t.name}" power curve`); continue; }
+    if (labelIs(row, ...SYN.thrustCurve)) { [t.thrust, i] = parseCurve(rows, i + 1, end, t.specs, unreadable, `Turbine type "${t.name}" thrust curve`); continue; }
+    if (labelIs(row, ...SYN.rpmCurve)) { [t.rpm, i] = parseCurve(rows, i + 1, end, t.specs, unreadable, `Turbine type "${t.name}" RPM curve`); continue; }
 
     if (isKvRow(row)) {
       inComments = false;
@@ -416,7 +426,7 @@ function parseTurbineType(rows: Cell[][], start: number, end: number): TurbineTy
  * Parse a "Windspeed \ Air Density" matrix. Leading KV rows (TI min/max)
  * are folded into `leadingKvs`. Returns [curve, nextRowIndex].
  */
-function parseCurve(rows: Cell[][], from: number, end: number, leadingKvs: KV[]): [CurveMatrix | null, number] {
+function parseCurve(rows: Cell[][], from: number, end: number, leadingKvs: KV[], unreadable: string[], context: string): [CurveMatrix | null, number] {
   let i = from;
   while (i < end) {
     const row = rows[i];
@@ -447,12 +457,13 @@ function parseCurve(rows: Cell[][], from: number, end: number, leadingKvs: KV[])
     i++;
   }
   if (speeds.length === 0) return [null, i];
+  if (densities.length === 0) { noteUnreadable(unreadable, context, headerRow); return [null, i]; }
   return [{ densities, speeds, values }, i];
 }
 
 /* ── met mast block ─────────────────────────────────────────────────── */
 
-function parseMast(rows: Cell[][], start: number, end: number): Mast {
+function parseMast(rows: Cell[][], start: number, end: number, unreadable: string[]): Mast {
   const m: Mast = {
     name: label(rows[start]).replace(/^(Met Mast Layer|Met Mast|Mast Layer)\s*:?\s*/i, ""),
     height: null, x: null, y: null,
@@ -465,8 +476,8 @@ function parseMast(rows: Cell[][], start: number, end: number): Mast {
     const a = label(row);
     if (isBlankRow(row)) { i++; continue; }
 
-    if (labelStarts(row, ...SYN.frequencyTable)) { [m.freq, i] = parseDirMatrix(rows, i + 1, end); continue; }
-    if (labelStarts(row, ...SYN.tiTable)) { [m.ti, i] = parseDirMatrix(rows, i + 1, end); continue; }
+    if (labelStarts(row, ...SYN.frequencyTable)) { [m.freq, i] = parseDirMatrix(rows, i + 1, end, unreadable, `Met mast "${m.name}" frequency table`); continue; }
+    if (labelStarts(row, ...SYN.tiTable)) { [m.ti, i] = parseDirMatrix(rows, i + 1, end, unreadable, `Met mast "${m.name}" TI table`); continue; }
     if (labelStarts(row, ...SYN.weibullTable)) { i = parseWeibull(rows, i + 1, end, m.weibull); continue; }
     if (labelStarts(row, ...SYN.heightTable)) { i = parseMiniTable(rows, i, end, "Heights", m.tables); continue; }
     if (labelStarts(row, ...SYN.stdev)) { i = parseMiniTable(rows, i + 1, end, a, m.tables); continue; }
@@ -506,7 +517,18 @@ function parseMiniTable(rows: Cell[][], headerRow: number, end: number, title: s
   return i;
 }
 
-function parseDirMatrix(rows: Cell[][], from: number, end: number): [DirMatrix | null, number] {
+/**
+ * Record a matrix whose header row was found but had no numeric data columns
+ * (e.g. a frequency table whose direction headers are compass/sector/text labels
+ * rather than numeric bearings). The raw header goes into the report so a
+ * maintainer can see exactly what to support.
+ */
+function noteUnreadable(unreadable: string[], context: string, header: Cell[]): void {
+  const cells = header.map(cellStr).filter((s) => s !== "").join(" | ");
+  unreadable.push(`${context}: header found but no numeric data columns — header row: ${cells}`);
+}
+
+function parseDirMatrix(rows: Cell[][], from: number, end: number, unreadable: string[], context: string): [DirMatrix | null, number] {
   // Header row reads e.g. "Speed \ Direction" or "Windspeed / Sector".
   const isMatrixHeader = (row: Cell[]): boolean => /^(wind)?speed\s*[\\/]/.test(norm(label(row)));
   let i = from;
@@ -539,6 +561,7 @@ function parseDirMatrix(rows: Cell[][], from: number, end: number): [DirMatrix |
     i++;
   }
   if (speedMid.length === 0) return [null, i];
+  if (dirs.length === 0) { noteUnreadable(unreadable, context, headerRow); return [null, i]; }
   return [{ dirs, speedLabels, speedMid, values }, i];
 }
 

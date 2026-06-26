@@ -1,5 +1,5 @@
 import { parseWorkbook } from "../parse/blocks";
-import { ParseError } from "../parse/types";
+import { ParseError, type ParsedWorkbook } from "../parse/types";
 import { setError, setWorkbook } from "../state";
 
 /** Route a thrown parse error to state, preserving diagnostics when present. */
@@ -51,14 +51,16 @@ export function initDropzone(root: HTMLElement): void {
   // "Try sample" link
   const sampleBtn = document.getElementById("sample-btn");
   sampleBtn?.addEventListener("click", async () => {
+    let wb: ParsedWorkbook;
     try {
       const res = await fetch("example.xlsx");
       if (!res.ok) throw new Error("Sample file not found");
-      const buf = await res.arrayBuffer();
-      setWorkbook(parseWorkbook(buf), "example.xlsx");
+      wb = parseWorkbook(await res.arrayBuffer());
     } catch (err) {
       reportError(err);
+      return;
     }
+    setWorkbook(wb, "example.xlsx");
   });
 
   // Drop onto hero area
@@ -73,12 +75,16 @@ export function initDropzone(root: HTMLElement): void {
 function loadFile(file: File): void {
   const reader = new FileReader();
   reader.onload = () => {
+    let wb: ParsedWorkbook;
     try {
-      const buf = reader.result as ArrayBuffer;
-      setWorkbook(parseWorkbook(buf), file.name);
+      wb = parseWorkbook(reader.result as ArrayBuffer);
     } catch (err) {
       reportError(err);
+      return;
     }
+    // Render outside the try: a plot/render error must not masquerade as a
+    // parse failure (which would also blank the whole report).
+    setWorkbook(wb, file.name);
   };
   reader.readAsArrayBuffer(file);
 }

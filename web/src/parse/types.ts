@@ -172,6 +172,12 @@ export interface ParseDiagnostics {
   labelsSeen: string[];
   /** Detected OpenWind version string, if any key/value carried it. */
   version: string | null;
+  /**
+   * Sections whose header was found but had no numeric data columns (e.g. a
+   * frequency table with non-numeric / WRG-style direction headers). Each entry
+   * names the section and quotes the raw header row, for the report email.
+   */
+  unreadable?: string[];
 }
 
 /** Thrown by parseWorkbook when nothing parses, carrying diagnostics for a user report. */

@@ -11,7 +11,7 @@ export function reportMailto(diag: ParseDiagnostics, filename: string): string {
   const version = diag.version ?? "unknown";
   const subject = `OWview parse report — OpenWind ${version}`;
 
-  const body = [
+  const lines = [
     "Hi — the OpenWind viewer could not read this export.",
     "",
     "Please attach the .xlsx file to this email so it can be fixed.",
@@ -21,10 +21,23 @@ export function reportMailto(diag: ParseDiagnostics, filename: string): string {
     `File: ${filename || "(unknown)"}`,
     `OpenWind version: ${version}`,
     `Sheets: ${diag.sheetNames.join(", ") || "(none)"}`,
+  ];
+
+  if (diag.unreadable?.length) {
+    lines.push(
+      "",
+      "Sections found but unreadable (headers may have drifted):",
+      ...diag.unreadable.map((u) => `  • ${u}`),
+    );
+  }
+
+  lines.push(
     "",
     "Labels found in column A:",
     ...diag.labelsSeen.map((l) => `  • ${l}`),
-  ].join("\n");
+  );
+
+  const body = lines.join("\n");
 
   return `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }
