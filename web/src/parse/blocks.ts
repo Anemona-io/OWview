@@ -116,7 +116,9 @@ function findAnchors(rows: Cell[][]): Anchor[] {
 /** Walk back from a "Power Curve [kWh]" row to the turbine-type title above "Comments:". */
 function findTypeTitle(rows: Cell[][], pcRow: number): number | null {
   for (let j = pcRow - 1; j >= Math.max(0, pcRow - 60); j--) {
-    if (labelIs(rows[j], ...SYN.comments)) {
+    // Prefix match: some files write the comment inline ("Comments: Power
+    // curve obtained from ...") instead of a bare "Comments:" row.
+    if (labelStarts(rows[j], ...SYN.comments)) {
       for (let k = j - 1; k >= Math.max(0, j - 6); k--) {
         if (!isBlankRow(rows[k]) && isSingleCell(rows[k])) return k;
       }
@@ -382,7 +384,9 @@ function parseTurbineType(rows: Cell[][], start: number, end: number, unreadable
   };
   let section: Group | null = null;
   let inComments = false;
-  let i = start + 1;
+  // When no title row was found, the block starts at the "Power Curve" anchor
+  // itself — don't skip it, or the matrix rows get swallowed as spec KVs.
+  let i = labelIs(rows[start], ...SYN.powerCurve) ? start : start + 1;
 
   while (i < end) {
     const row = rows[i];

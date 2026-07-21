@@ -1,7 +1,16 @@
 import type { Cell, KV } from "./types";
 
-/** OpenWind writes -999 and ~3.3e+36 as "no data" sentinels. */
+/**
+ * OpenWind writes -999 and ~3.3e+36 as "no data" sentinels. Some builds
+ * (seen in 01.09.00) store numeric cells as text; a string that is entirely
+ * one plain number is accepted, then cleaned like a numeric cell.
+ */
 export function cleanNum(v: Cell): number | null {
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+    v = parseFloat(s);
+  }
   if (typeof v !== "number" || !isFinite(v)) return null;
   if (Math.abs(v) >= 1e30) return null;
   if (Math.abs(v + 999) < 1e-9) return null;
